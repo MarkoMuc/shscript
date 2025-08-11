@@ -1,0 +1,73 @@
+#!/bin/bash
+
+send_notification() {
+  notify-send -u ${1} -t 5000 -a "Monitor switching" "${2}"
+}
+
+if ! command -v kscreen-doctor >/dev/null 2>&1; then
+    send_notification "critical" "🛠️  kscreen-doctor not found 🔎 "
+    exit 1
+fi
+
+mapfile -t output_names < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | .name')
+mapfile -t mode_ids < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | .preferredModes[0]')
+
+if [ ${#output_names[@]} -lt 2 ]; then
+  send_notification "critical" "1️⃣   Only one screen detected"
+  exit 1
+fi
+
+declare -a resolutions
+
+for i in "${!output_names[@]}"; do
+  name="${output_names[$i]}"
+  mode_id="${mode_ids[$i]}"
+
+  resolution=$(kscreen-doctor -j | jq -r --arg name "$name" --arg mode_id "$mode_id" \
+    '.outputs[] | select(.name == $name) | .modes[] | select(.id == $mode_id) | "\(.size.width)x\(.size.height)"')
+
+  resolutions+=("$resolution")
+done
+
+primary=${output_names[0]}
+panel=${output_names[1]}
+
+case "$1" in
+  "pundr")
+    xm=$(echo "${resolutions[0]}" | cut -d'x' -f1)
+    ym=$(echo "${resolutions[0]}" | cut -d'x' -f2)
+    xp=$(echo "${resolutions[1]}" | cut -d'x' -f1)
+    panel_xpos=$(( ( xm - xp ) / 2 ))
+    panel_ypos=$ym
+
+    kscreen-doctor "output.$panel.enable" "output.$panel.mode.${mode_ids[1]}" \
+      "output.$primary.enable" "output.$primary.mode.${mode_ids[0]}" \
+      "output.$panel.position.$panel_xpos,$panel_ypos" \
+      "output.$primary.position.0,0"\
+      "output.$panel.priority.2"\
+      "output.$primary.priority.1" > /dev/null
+
+    send_notification "normal" "✅ 📺 Monitor ↕️ 💻 Laptop"
+    ;;
+  "plr")
+    ym=$(echo "${resolutions[0]}" | cut -d'x' -f2)
+    xm=$(echo "${resolutions[0]}" | cut -d'x' -f1)
+    yp=$(echo "${resolutions[1]}" | cut -d'x' -f2)
+    panel_ypos=$(( ym - yp ))
+    panel_xpos=$xm
+
+    kscreen-doctor "output.$panel.enable" "output.$panel.mode.${mode_ids[1]}" \
+      "output.$primary.enable" "output.$primary.mode.${mode_ids[0]}" \
+      "output.$panel.position.$panel_xpos,$panel_ypos"\
+      "output.$primary.position.0,0"\
+      "output.$panel.priority.2"\
+      "output.$primary.priority.1" > /dev/null
+
+    send_notification "normal" "✅ 📺 Monitor ↔️ 💻 Laptop"
+    ;;
+  *)
+    send_notification "critical" "⁉️ Unkown argument: plr or pundr"
+    ;;
+esac
+
+exit 0
