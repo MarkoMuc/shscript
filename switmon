@@ -65,6 +65,15 @@ case "$1" in
 
     send_notification "normal" "✅ 📺 Monitor ↔️ 💻 Laptop"
     ;;
+  "lpnly")
+    kscreen-doctor "output.$primary.disable" \
+      "output.$panel.enable" \
+      "output.$panel.mode.${mode_ids[1]}" \
+      "output.$panel.position.0,0" \
+      "output.$panel.priority.1" > /dev/null
+
+    send_notification "normal" "✅ 💻 Laptop only"
+    ;;
   *)
     send_notification "critical" "⁉️ Unkown argument: plr or pundr"
     ;;
