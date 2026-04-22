@@ -10,7 +10,7 @@ if ! command -v kscreen-doctor >/dev/null 2>&1; then
 fi
 
 mapfile -t output_names < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | .name')
-mapfile -t mode_ids < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | .preferredModes[0]')
+mapfile -t mode_ids < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | (.modes | sort_by(.size.width * .size.height, .refreshRate) | last | .id)')
 
 if [ ${#output_names[@]} -lt 2 ]; then
   send_notification "critical" "1️⃣   Only one screen detected"

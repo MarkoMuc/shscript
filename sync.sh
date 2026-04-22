@@ -2,7 +2,7 @@
 
 set -xe
 
-LOGFILE="$HOME/.logs/alexandria.log"
+LOGFILE="$HOME/.logs/valvasor.log"
 mkdir -p "$(dirname "$LOGFILE")"
 
 DO_ARCHIVE=false
@@ -14,10 +14,10 @@ rsync -rvhP \
   --exclude "Archive" \
   --exclude ".directory" \
   --exclude "sync.sh" \
-  ~/Books/ alexandria:~/Books
+  ~/Books/ valvasor:~/Books
 
 if $DO_ARCHIVE; then
-  nohup ssh alexandria \
-    "mkdir -p /home/alexandria/Archive && zip -r /home/alexandria/Archive/books_\$(date +%Y-%U).zip /home/alexandria/Books >> /home/alexandria/archive.logs 2>&1" \
+  nohup ssh valvasor \
+    "mkdir -p /home/valvasor/Archive && zip -r /home/valvasor/Archive/books_\$(date +%Y-%U).zip /home/valvasor/Books >> /home/valvasor/.logs/archive.logs 2>&1" \
     >> "$LOGFILE" 2>&1 &
 fi
