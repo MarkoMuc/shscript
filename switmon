@@ -1,82 +1,101 @@
 #!/bin/bash
+set -Eeuo pipefail
 
-send_notification() {
-  notify-send -u ${1} -t 5000 -a "Monitor switching" "${2}"
+notify() {
+  if command -v notify-send >/dev/null; then
+    notify-send -u "$1" -t 5000 -a "Monitor switching" "$2" || true
+  fi
 }
 
-if ! command -v kscreen-doctor >/dev/null 2>&1; then
-    send_notification "critical" "🛠️  kscreen-doctor not found 🔎 "
-    exit 1
-fi
+die() {
+  printf '%s\n' "$1" >&2
+  notify critical "$1"
+  exit 1
+}
 
-mapfile -t output_names < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | .name')
-mapfile -t mode_ids < <(kscreen-doctor -j | jq -r '.outputs | sort_by(.name)[] | (.modes | sort_by(.size.width * .size.height, .refreshRate) | last | .id)')
+usage() {
+  echo "Usage: ${0##*/} {pundr|plr|lpnly} [--dry-run]"
+}
 
-if [ ${#output_names[@]} -lt 2 ]; then
-  send_notification "critical" "1️⃣   Only one screen detected"
+case "${1:-}" in
+  pundr|plr|lpnly) layout=$1 ;;
+  -h|--help) usage; exit 0 ;;
+  *) usage >&2; exit 1 ;;
+esac
+dry_run=false
+if [[ ${2:-} == --dry-run ]]; then dry_run=true; fi
+if (( $# > 2 )) || { (( $# == 2 )) && ! $dry_run; }; then
+  usage >&2
   exit 1
 fi
 
-declare -a resolutions
-
-for i in "${!output_names[@]}"; do
-  name="${output_names[$i]}"
-  mode_id="${mode_ids[$i]}"
-
-  resolution=$(kscreen-doctor -j | jq -r --arg name "$name" --arg mode_id "$mode_id" \
-    '.outputs[] | select(.name == $name) | .modes[] | select(.id == $mode_id) | "\(.size.width)x\(.size.height)"')
-
-  resolutions+=("$resolution")
+for dependency in kscreenctl jq; do
+  command -v "$dependency" >/dev/null || die "$dependency not found"
 done
+trap 'die "Monitor switching failed; the layout may be partially applied. See terminal output."' ERR
 
-primary=${output_names[0]}
-panel=${output_names[1]}
+outputs=$(kscreenctl list-outputs --json | jq -er '
+  [.[] | select(.connected) |
+    . as $output |
+    (.modes | max_by(.resolution.width * .resolution.height, .refreshRate)) as $mode |
+    if $mode == null then error("No modes for " + .name) else
+      ($output.rotation | IN("90", "270", "flipped90", "flipped270")) as $rotated |
+      {name, internal: (.name | test("^(eDP|LVDS|DSI)-")),
+       mode: $mode.id, hz: $mode.refreshRate,
+       width: (($mode.resolution | if $rotated then .height else .width end) / .scale | round),
+       height: (($mode.resolution | if $rotated then .width else .height end) / .scale | round)}
+    end]')
 
-case "$1" in
-  "pundr")
-    xm=$(echo "${resolutions[0]}" | cut -d'x' -f1)
-    ym=$(echo "${resolutions[0]}" | cut -d'x' -f2)
-    xp=$(echo "${resolutions[1]}" | cut -d'x' -f1)
-    panel_xpos=$(( ( xm - xp ) / 2 ))
-    panel_ypos=$ym
+[[ $(jq '[.[] | select(.internal)] | length' <<< "$outputs") == 1 ]] ||
+  die "Expected one internal display (eDP, LVDS or DSI)."
+read -r panel panel_mode panel_width panel_height panel_hz < <(
+  jq -r '.[] | select(.internal) | [.name, .mode, .width, .height, .hz] | @tsv' <<< "$outputs"
+)
+mapfile -t externals < <(jq -r '.[] | select(.internal | not) | .name' <<< "$outputs")
+if [[ $layout != lpnly && ${#externals[@]} != 1 ]]; then
+  die "This layout needs exactly one connected external display."
+fi
 
-    kscreen-doctor "output.$panel.enable" "output.$panel.mode.${mode_ids[1]}" \
-      "output.$primary.enable" "output.$primary.mode.${mode_ids[0]}" \
-      "output.$panel.position.$panel_xpos,$panel_ypos" \
-      "output.$primary.position.0,0"\
-      "output.$panel.priority.2"\
-      "output.$primary.priority.1" > /dev/null
+run() {
+  if $dry_run; then
+    printf '%q ' kscreenctl "$@"; printf '\n'
+  else
+    kscreenctl "$@" >/dev/null
+  fi
+}
 
-    send_notification "normal" "✅ 📺 Monitor ↕️ 💻 Laptop"
-    ;;
-  "plr")
-    ym=$(echo "${resolutions[0]}" | cut -d'x' -f2)
-    xm=$(echo "${resolutions[0]}" | cut -d'x' -f1)
-    yp=$(echo "${resolutions[1]}" | cut -d'x' -f2)
-    panel_ypos=$(( ym - yp ))
-    panel_xpos=$xm
+run "$panel" set-enabled true
+run "$panel" set-mode "$panel_mode"
 
-    kscreen-doctor "output.$panel.enable" "output.$panel.mode.${mode_ids[1]}" \
-      "output.$primary.enable" "output.$primary.mode.${mode_ids[0]}" \
-      "output.$panel.position.$panel_xpos,$panel_ypos"\
-      "output.$primary.position.0,0"\
-      "output.$panel.priority.2"\
-      "output.$primary.priority.1" > /dev/null
+if [[ $layout == lpnly ]]; then
+  for external in "${externals[@]}"; do
+    run "$external" set-enabled false
+  done
+  run "$panel" set-primary
+  run "$panel" set-position 0 0
+  message="✅ 💻 Laptop only"
+else
+  read -r external external_mode external_width external_height external_hz < <(
+    jq -r '.[] | select(.internal | not) | [.name, .mode, .width, .height, .hz] | @tsv' <<< "$outputs"
+  )
+  run "$external" set-enabled true
+  run "$external" set-mode "$external_mode"
+  run "$external" set-primary
+  run "$panel" set-priority 2
 
-    send_notification "normal" "✅ 📺 Monitor ↔️ 💻 Laptop"
-    ;;
-  "lpnly")
-    kscreen-doctor "output.$primary.disable" \
-      "output.$panel.enable" \
-      "output.$panel.mode.${mode_ids[1]}" \
-      "output.$panel.position.0,0" \
-      "output.$panel.priority.1" > /dev/null
+  if [[ $layout == pundr ]]; then
+    panel_x=$(( (external_width - panel_width) / 2 ))
+    panel_y=$external_height
+    message="✅ 📺 Monitor ↕️ 💻 Laptop"
+  else
+    panel_x=$external_width
+    panel_y=$(( external_height - panel_height ))
+    message="✅ 📺 Monitor ↔️ 💻 Laptop"
+  fi
+  external_x=$(( panel_x < 0 ? -panel_x : 0 ))
+  external_y=$(( panel_y < 0 ? -panel_y : 0 ))
+  run "$external" set-position "$external_x" "$external_y"
+  run "$panel" set-position "$((panel_x + external_x))" "$((panel_y + external_y))"
+fi
 
-    send_notification "normal" "✅ 💻 Laptop only"
-    ;;
-  *)
-    send_notification "critical" "⁉️ Unkown argument: plr or pundr"
-    ;;
-esac
-
-exit 0
+if ! $dry_run; then notify normal "$message"; fi
